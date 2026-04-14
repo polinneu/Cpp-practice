@@ -1,0 +1,148 @@
+#include <array>
+#include <cerrno>
+#include <cstring>
+#include <format>
+#include <iostream>
+#include <netinet/in.h>
+#include <stdexcept>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <thread>
+#include <unistd.h>
+#include <vector>
+#include <poll.h>
+#include <shared_mutex>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+
+class ThreadPool {
+public:
+    ThreadPool(int threads) {
+        for (long i = 0; i < threads; ++i) {
+            threads_.emplace_back([this]() {
+                work();
+            });
+        }
+    }
+    ~ThreadPool() {
+        stop();
+        for (long long i = 0; i < threads_.size(); ++i) {
+            threads_[i].join();
+        }
+    }
+    void stop () {
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            status_ = Ended;
+        }
+        cv_.notify_all();
+    }
+    void enqueue(std::function<void()> task) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (status_ == Ended) return;
+        queue_.emplace(std::move(task));
+        lock.unlock();
+        cv_.notify_one();
+    }
+
+private:
+    void work () {
+        while (true) {
+            std::function<void()> task;
+            std::unique_lock<std::mutex> lock(mutex_);
+            cv_.wait(lock, [this] () {
+                return !queue_.empty() || status_ == Ended;
+            });
+            if (status_ == Ended && queue_.empty()) {
+                break;
+            }
+            task = queue_.front();
+            queue_.pop();
+            lock.unlock();
+            task();
+        }
+    }
+    std::vector <std::thread> threads_;
+    std::queue <std::function<void()>> queue_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    enum State {
+        Active,
+        Ended
+    };
+    State status_ = Active;
+};
+
+
+class TCP_Server {
+public:
+    TCP_Server(int port): port_(port), tp_(5) {
+        create_server();
+    }
+    ~TCP_Server() {
+        tp_.stop();
+    }
+    void start() {
+        work();
+    }
+private:
+    void create_server() {
+        sock_ = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock_ < 0) {
+            std::cout << "Failed to create socket" << std::endl;
+            return;
+        }
+        address_.sin_family = AF_INET;
+        address_.sin_port = htons(port_);
+        address_.sin_addr.s_addr = INADDR_ANY;
+
+        if (bind(sock_, (sockaddr*)&address_, sizeof(address_)) < 0) {
+            std::cout << "Failed to bind socket" << std::endl;
+            return;
+        }
+
+        if (listen(sock_, 5) < 0) {
+            std::cout << "Failed to listen on socket" << std::endl;
+            return;
+        }
+
+        std::cout << "Server listening on port " << port_ << std::endl;
+    }
+    void work() {
+        while (true) {
+            socklen_t addr_len = sizeof(address_);
+            int client_sock = accept(sock_, (sockaddr*)&address_, &addr_len);
+            if (client_sock < 0) {
+                std::cout << "Failed to accept connection" << std::endl;
+                continue;
+            }
+            std::cout << "New client connected!" << std::endl;
+            tp_.enqueue ([this, client_sock] () {
+                work_with_client(client_sock);
+            });
+        }
+    }
+    void work_with_client (int client_sock) {
+        char buffer[1024];
+        int bytes = recv(client_sock, buffer, sizeof(buffer), 0);
+        while (bytes > 0) {
+            buffer[bytes] = '\0';
+            std::cout << buffer << std::endl;
+            std::string response = "ok";
+            send(client_sock, response.c_str(), response.size(), 0);
+            bytes = recv(client_sock, buffer, sizeof(buffer), 0);
+        }
+        close(client_sock);
+    }
+    int port_;
+    int sock_;
+    sockaddr_in address_ {};
+    ThreadPool tp_;
+};
+int main() {
+    TCP_Server ts (8080);
+    ts.start();
+    ts.end();
+}
