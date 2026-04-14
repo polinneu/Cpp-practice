@@ -1,0 +1,100 @@
+#include <array>
+#include <cerrno>
+#include <cstring>
+#include <format>
+#include <iostream>
+#include <netinet/in.h>
+#include <stdexcept>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <thread>
+#include <unistd.h>
+#include <vector>
+#include <poll.h>
+#include <shared_mutex>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+struct TCP_Server {
+public:
+    TCP_Server(int port): port_(port) {
+        create_server();
+    }
+    ~TCP_Server() {
+        end();
+    }
+    void start() {
+        work();
+    }
+    void end () {
+        for (int i = 0; i < threads_.size(); ++i) {
+            if (threads_[i].joinable()) threads_[i].join();
+        }
+    }
+private:
+    void create_server() {
+        sock_ = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock_ < 0) {
+            std::cout << "Failed to create socket" << std::endl;
+            return;
+        }
+        address_.sin_family = AF_INET;
+        address_.sin_port = htons(port_);
+        address_.sin_addr.s_addr = INADDR_ANY;
+
+        if (bind(sock_, (sockaddr*)&address_, sizeof(address_)) < 0) {
+            std::cout << "Failed to bind socket" << std::endl;
+            return;
+        }
+
+        if (listen(sock_, 5) < 0) {
+            std::cout << "Failed to listen on socket" << std::endl;
+            return;
+        }
+
+        std::cout << "Server listening on port " << port_ << std::endl;
+    }
+    void work() {
+        while (true) {
+            socklen_t addr_len = sizeof(address_);
+            int client_sock = accept(sock_, (sockaddr*)&address_, &addr_len);
+            if (client_sock < 0) {
+                std::cout << "Failed to accept connection" << std::endl;
+                continue;
+            }
+            std::cout << "New client connected!" << std::endl;
+            threads_.emplace_back([this, client_sock] () {
+                work_with_client(client_sock);
+            });
+        }
+    }
+    void work_with_client (int client_sock) {
+        char buffer[1024];
+        int bytes = recv(client_sock, buffer, sizeof(buffer), 0);
+        while (bytes > 0) {
+            buffer[bytes] = '\0';
+            std::cout << buffer << std::endl;
+            std::string response = "ok";
+            send(client_sock, response.c_str(), response.size(), 0);
+            bytes = recv(client_sock, buffer, sizeof(buffer), 0);
+        }
+        close(client_sock);
+    }
+    int port_;
+    int sock_;
+    sockaddr_in address_ {};
+    std::vector <std::thread> threads_;
+};
+int main() {
+    TCP_Server ts (8080);
+    ts.start();
+    ts.end();
+}
+//1 окно:
+//cd /Users/polina/CLionProjects/cppPract/cmake-build-debug
+//./cppPract
+//2 окно:
+//nc 127.0.0.1 8080
+//hello
+//ok
