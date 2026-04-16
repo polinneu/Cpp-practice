@@ -1,0 +1,98 @@
+#include <array>
+#include <cerrno>
+#include <cstring>
+#include <format>
+#include <iostream>
+#include <netinet/in.h>
+#include <stdexcept>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <thread>
+#include <unistd.h>
+#include <vector>
+#include <poll.h>
+#include <shared_mutex>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+int main() {
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock == -1) {
+        std::cerr << "socket failed" << std::endl;
+        return -1;
+    }
+
+    sockaddr_in server;
+    server.sin_family = AF_INET;
+    server.sin_port = htons(8080);
+    server.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(sock, (struct sockaddr*)&server, sizeof(server)) == -1) {
+        std::cerr << "bind failed" << std::endl;
+        return -1;
+    }
+    if (listen(sock, 5) == -1) {
+        std::cerr << "listen failed" << std::endl;
+        return -1;
+    }
+
+    std::vector <pollfd> fds;
+    fds.push_back({sock, POLLIN, 0});
+    while (true) {
+        int poll_res = poll(fds.data(), fds.size(), 1000);
+        if (poll_res <= 0) {
+            continue;
+        }
+        bool ended = false;
+        for (long long i = 0; i < fds.size(); i++) {
+            if (fds[i].revents == 0) {
+                continue;
+            }
+            if (fds[i].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+                close(fds[i].fd);
+                fds.erase(fds.begin() + i);
+                --i;
+                continue;
+            }
+            if (fds[i].fd == sock && fds[i].revents & POLLIN) {
+                int client_sock = accept(sock, nullptr, nullptr);
+                fds.push_back({client_sock, POLLIN, 0});
+                continue;
+            }
+            if (fds[i].revents & POLLIN) {
+                char buffer[1024];
+                int bytes = recv(fds[i].fd, buffer, sizeof(buffer), 0);
+                if (bytes == -1) {
+                    std::cout << "Client " << fds[i].fd << " disconnected" << std::endl;
+                    close(fds[i].fd);
+                    fds.erase(fds.begin() + i);
+                    --i;
+                    continue;
+                } else {
+                    buffer[bytes] = '\0';
+                    if (std::string(buffer) == "end")   {
+                        ended = true;
+                        break;
+                    }
+                    std::cout << buffer << std::endl;
+                    send(fds[i].fd, "ok", bytes, 0);
+                }
+            }
+        }
+        if (ended) break;
+    }
+    close(sock);
+    for (auto& pfd : fds) {
+        close(pfd.fd);
+    }
+
+}
+
+
+
+
+
+
+
+
+
